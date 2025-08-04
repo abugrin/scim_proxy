@@ -1,0 +1,49 @@
+services:
+  scim-proxy:
+    image: abugrin/scim-proxy:latest
+    environment:
+      - UPSTREAM_BASE_URL=${UPSTREAM_BASE_URL:-http://localhost:8080/scim/v2}
+      - UPSTREAM_TIMEOUT=${UPSTREAM_TIMEOUT:-30}
+      - UPSTREAM_MAX_CONNECTIONS=${UPSTREAM_MAX_CONNECTIONS:-100}
+      - PROXY_HOST=${PROXY_HOST:-0.0.0.0}
+      - PROXY_PORT=${PROXY_PORT:-8000}
+      - PROXY_WORKERS=${PROXY_WORKERS:-4}
+      - CACHE_TTL=${CACHE_TTL:-300}
+      - CACHE_MAX_SIZE=${CACHE_MAX_SIZE:-1000}
+      - ENABLE_CACHE=${ENABLE_CACHE:-true}
+      - LOG_LEVEL=${LOG_LEVEL:-INFO}
+      - LOG_FORMAT=${LOG_FORMAT:-json}
+      - ALLOWED_HOSTS=${ALLOWED_HOSTS:-*}
+      - CORS_ORIGINS=${CORS_ORIGINS:-*}
+      - MAX_FILTER_COMPLEXITY=${MAX_FILTER_COMPLEXITY:-50}
+      - MAX_RESPONSE_SIZE=${MAX_RESPONSE_SIZE:-10485760}
+    volumes:
+      - ./.env:/app/.env:ro
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:8000/health"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 40s
+    restart: unless-stopped
+    networks:
+      - scim-network
+
+  nginx:
+    image: nginx:alpine
+    ports:
+      - "80:80"
+      - "443:443"
+    volumes:
+      - ./nginx/nginx.conf:/etc/nginx/nginx.conf:ro
+      - ./certs/certificate_full_chain.pem:/etc/ssl/certs/certificate_full_chain.pem:ro
+      - ./certs/private_key.pem:/etc/ssl/private/private_key.pem:ro
+    depends_on:
+      - scim-proxy
+    restart: unless-stopped
+    networks:
+      - scim-network
+
+networks:
+  scim-network:
+    driver: bridge
