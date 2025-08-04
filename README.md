@@ -92,14 +92,16 @@ emails[primary eq true and type eq "work"].value
 
 ### Итоговая структура
 
+```
 scim_proxy/
-├── .env
+├── .env 
 ├── docker-compose.yml
 ├── nginx/
 │   ├── nginx.conf
 ├── cert/
 │   ├── certificate_full_chain.pem
 │   ├── private_key.pem
+```
 
 
 ### Вариант 1: Использование готового образа из Docker Hub
