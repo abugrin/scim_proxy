@@ -86,7 +86,7 @@ class ListResponse(BaseModel):
     totalResults: int
     startIndex: int = 1
     itemsPerPage: int
-    Resources: List[User] = Field(default_factory=list)
+    Resources: List[Union[User, Dict[str, Any]]] = Field(default_factory=list)
 
 
 class SCIMError(BaseModel):
@@ -138,4 +138,4 @@ class GroupListResponse(BaseModel):
     totalResults: int
     startIndex: int = 1
     itemsPerPage: int
-    Resources: List[Group] = Field(default_factory=list)
+    Resources: List[Union[Group, Dict[str, Any]]] = Field(default_factory=list)

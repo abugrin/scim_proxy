@@ -1,6 +1,7 @@
 """HTTP прокси сервис для взаимодействия с upstream SCIM API"""
 
 import httpx
+import logging
 from typing import Dict, Any, Optional, List
 import asyncio
 from urllib.parse import urljoin, urlparse, parse_qs, urlencode
@@ -35,7 +36,7 @@ class SCIMProxyService:
             await self.client.aclose()
     
     async def get_users(
-        self, 
+        self,
         headers: Dict[str, str],
         start_index: int = 1,
         count: int = 100,
@@ -45,16 +46,12 @@ class SCIMProxyService:
         """Получение списка пользователей от upstream API"""
         
         # Подготавливаем параметры запроса
+        # НЕ передаем attributes и excludedAttributes в upstream API,
+        # так как он их не поддерживает - фильтрация будет на уровне прокси
         params: Dict[str, Any] = {
             "startIndex": start_index,
             "count": count
         }
-        
-        if attributes:
-            params["attributes"] = ",".join(attributes)
-        
-        if excluded_attributes:
-            params["excludedAttributes"] = ",".join(excluded_attributes)
         
         try:
             if not self.client:
@@ -168,15 +165,32 @@ class SCIMProxyService:
     async def create_user(self, user_data: Dict[str, Any], headers: Dict[str, str]) -> User:
         """Создание пользователя через upstream API"""
         
+        logger = logging.getLogger(__name__)
+        
         try:
             if not self.client:
                 raise UpstreamError("HTTP client not initialized")
+            
+            prepared_headers = self._prepare_headers(headers, content_type="application/scim+json")
+            masked_headers = self._mask_sensitive_headers(prepared_headers)
+            
+            logger.info(f"Sending POST request to create user")
+            logger.info(f"Request URL: /Users")
+            logger.info(f"Request headers: {masked_headers}")
+            logger.debug(f"Request body: {user_data}")
                 
             response = await self.client.post(
                 "/Users",
                 json=user_data,
-                headers=self._prepare_headers(headers, content_type="application/scim+json")
+                headers=prepared_headers
             )
+            
+            logger.info(f"Upstream API response status: {response.status_code}")
+            
+            if self._should_log_response_body(logger):
+                logger.debug(f"Upstream API response body: {response.text}")
+            elif response.status_code >= 400:
+                logger.error(f"Upstream API error response: {response.text}")
             
             if response.status_code in [201, 200]:
                 data = response.json()
@@ -188,61 +202,46 @@ class SCIMProxyService:
                 )
                 
         except httpx.RequestError as e:
+            logger.error(f"HTTP request error for create user: {str(e)}")
             raise UpstreamError(f"Request to upstream API failed: {str(e)}")
         except Exception as e:
+            logger.error(f"Unexpected error in create_user: {str(e)}", exc_info=True)
             raise UpstreamError(f"Unexpected error: {str(e)}")
     
     async def update_user(
-        self, 
-        user_id: str, 
-        user_data: Dict[str, Any], 
+        self,
+        user_id: str,
+        user_data: Dict[str, Any],
         headers: Dict[str, str]
     ) -> User:
         """Полное обновление пользователя через upstream API"""
         
-        try:
-            if not self.client:
-                raise UpstreamError("HTTP client not initialized")
-                
-            response = await self.client.put(
-                f"/Users/{user_id}",
-                json=user_data,
-                headers=self._prepare_headers(headers, content_type="application/scim+json")
-            )
-            
-            if response.status_code == 200:
-                data = response.json()
-                return User(**data)
-            elif response.status_code == 404:
-                raise UpstreamError(f"User {user_id} not found", status_code=404)
-            else:
-                raise UpstreamError(
-                    f"Upstream API returned {response.status_code}: {response.text}",
-                    status_code=response.status_code
-                )
-                
-        except httpx.RequestError as e:
-            raise UpstreamError(f"Request to upstream API failed: {str(e)}")
-        except Exception as e:
-            raise UpstreamError(f"Unexpected error: {str(e)}")
-    
-    async def patch_user(
-        self, 
-        user_id: str, 
-        patch_data: Dict[str, Any], 
-        headers: Dict[str, str]
-    ) -> User:
-        """Частичное обновление пользователя через upstream API"""
+        logger = logging.getLogger(__name__)
         
         try:
             if not self.client:
                 raise UpstreamError("HTTP client not initialized")
+            
+            prepared_headers = self._prepare_headers(headers, content_type="application/scim+json")
+            masked_headers = self._mask_sensitive_headers(prepared_headers)
+            
+            logger.info(f"Sending PUT request to update user {user_id}")
+            logger.info(f"Request URL: /Users/{user_id}")
+            logger.info(f"Request headers: {masked_headers}")
+            logger.debug(f"Request body: {user_data}")
                 
-            response = await self.client.patch(
+            response = await self.client.put(
                 f"/Users/{user_id}",
-                json=patch_data,
-                headers=self._prepare_headers(headers, content_type="application/scim+json")
+                json=user_data,
+                headers=prepared_headers
             )
+            
+            logger.info(f"Upstream API response status: {response.status_code}")
+            
+            if self._should_log_response_body(logger):
+                logger.debug(f"Upstream API response body: {response.text}")
+            elif response.status_code >= 400:
+                logger.error(f"Upstream API error response: {response.text}")
             
             if response.status_code == 200:
                 data = response.json()
@@ -256,8 +255,88 @@ class SCIMProxyService:
                 )
                 
         except httpx.RequestError as e:
+            logger.error(f"HTTP request error for user {user_id}: {str(e)}")
             raise UpstreamError(f"Request to upstream API failed: {str(e)}")
         except Exception as e:
+            logger.error(f"Unexpected error in update_user for user {user_id}: {str(e)}", exc_info=True)
+            raise UpstreamError(f"Unexpected error: {str(e)}")
+    
+    def _mask_sensitive_headers(self, headers: Dict[str, str]) -> Dict[str, str]:
+        """Маскирует чувствительные данные в заголовках для логирования"""
+        masked_headers = {}
+        sensitive_keys = ['authorization', 'x-api-key', 'x-auth-token', 'bearer', 'cookie']
+        
+        for key, value in headers.items():
+            if key.lower() in sensitive_keys:
+                if len(value) > 10:
+                    masked_headers[key] = f"{value[:4]}...{value[-4:]}"
+                else:
+                    masked_headers[key] = "***masked***"
+            else:
+                masked_headers[key] = value
+        
+        return masked_headers
+    
+    def _should_log_response_body(self, logger) -> bool:
+        """Определяет, нужно ли логировать тело ответа (только в DEBUG режиме)"""
+        return logger.isEnabledFor(logging.DEBUG)
+    
+    async def patch_user(
+        self,
+        user_id: str,
+        patch_data: Dict[str, Any],
+        headers: Dict[str, str]
+    ) -> User:
+        """Частичное обновление пользователя через upstream API"""
+        
+        import logging
+        logger = logging.getLogger(__name__)
+        
+        try:
+            if not self.client:
+                raise UpstreamError("HTTP client not initialized")
+            
+            # Подробное логирование запроса
+            prepared_headers = self._prepare_headers(headers, content_type="application/scim+json")
+            masked_headers = self._mask_sensitive_headers(prepared_headers)
+            
+            logger.info(f"Sending PATCH request to upstream API for user {user_id}")
+            logger.info(f"Request URL: /Users/{user_id}")
+            logger.info(f"Request headers: {masked_headers}")
+            logger.info(f"Request body: {patch_data}")
+                
+            response = await self.client.patch(
+                f"/Users/{user_id}",
+                json=patch_data,
+                headers=prepared_headers
+            )
+            
+            # Логируем ответ
+            logger.info(f"Upstream API response status: {response.status_code}")
+            
+            # Логируем тело ответа только в DEBUG режиме
+            if self._should_log_response_body(logger):
+                logger.debug(f"Upstream API response body: {response.text}")
+            elif response.status_code >= 400:
+                # Всегда логируем ошибки
+                logger.error(f"Upstream API error response: {response.text}")
+            
+            if response.status_code == 200:
+                data = response.json()
+                return User(**data)
+            elif response.status_code == 404:
+                raise UpstreamError(f"User {user_id} not found", status_code=404)
+            else:
+                raise UpstreamError(
+                    f"Upstream API returned {response.status_code}: {response.text}",
+                    status_code=response.status_code
+                )
+                
+        except httpx.RequestError as e:
+            logger.error(f"HTTP request error for user {user_id}: {str(e)}")
+            raise UpstreamError(f"Request to upstream API failed: {str(e)}")
+        except Exception as e:
+            logger.error(f"Unexpected error in patch_user for user {user_id}: {str(e)}", exc_info=True)
             raise UpstreamError(f"Unexpected error: {str(e)}")
     
     async def delete_user(self, user_id: str, headers: Dict[str, str]) -> bool:
@@ -352,16 +431,12 @@ class SCIMProxyService:
         """Получение списка групп от upstream API"""
         
         # Подготавливаем параметры запроса
+        # НЕ передаем attributes и excludedAttributes в upstream API,
+        # так как он их не поддерживает - фильтрация будет на уровне прокси
         params: Dict[str, Any] = {
             "startIndex": start_index,
             "count": count
         }
-        
-        if attributes:
-            params["attributes"] = ",".join(attributes)
-        
-        if excluded_attributes:
-            params["excludedAttributes"] = ",".join(excluded_attributes)
         
         try:
             if not self.client:
