@@ -10,7 +10,7 @@ class Settings(BaseSettings):
     """Настройки приложения"""
     
     # Upstream API настройки
-    upstream_base_url: HttpUrl = "http://localhost:8080/scim/v2"
+    upstream_base_url: HttpUrl = "http://localhost:8080/scim/v2" # pyright: ignore[reportAssignmentType]
     upstream_timeout: int = 30
     upstream_max_connections: int = 100
     
